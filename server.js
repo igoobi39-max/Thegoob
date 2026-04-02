@@ -1,6 +1,6 @@
 // server.js - OpenAI to NVIDIA NIM API Proxy
 // Janitor RP Safe + 413 Protected + OpenRouter-like Layer
-// + Dynamic Auto-Regeneration + Multi-Layer Per-Chat Memory (Rolling)
+// + Dynamic Auto-Regeneration + Multi-Layer Per-Chat Memory
 
 const express = require('express');
 const cors = require('cors');
@@ -24,7 +24,6 @@ const NIM_API_KEY = process.env.NIM_API_KEY;
 // ======================
 //  SAFE LIMITS & CONFIG
 // ======================
-const MAX_MESSAGES = 80;
 const MAX_MESSAGE_CHARS = 8000;
 const MIN_RESPONSE_TOKENS = 50;
 const MAX_RETRIES = 2;
@@ -33,13 +32,15 @@ const MAX_RETRIES = 2;
 //  SMART MEMORY CONFIG
 // ======================
 const MAX_CONTEXT_MESSAGES = 40;     // Keeps request size light and fast
-const MEMORY_UPDATE_INTERVAL = 20;   // Triggers background summary every 20 messages
+const SUMMARY_TRIGGER_MESSAGES = 60; // Wait until we have 60 messages
+const SUMMARY_COOLDOWN = 40;         // Then wait 40 more before summarizing again
 
 // ======================
 //  MEMORIES STORAGE (PER CHAT)
 // ======================
 const CORE_MEMORIES = new Map();        // Stable identity memory
-const STORY_SUMMARIES = new Map();      // Rolling long-term plot memory
+const STORY_SUMMARIES = new Map();      // Rolling plot summary
+const LAST_SUMMARY_AT = new Map();      // Cooldown tracker
 
 // ======================
 //  MODEL MAPPING
@@ -61,51 +62,55 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     service: 'NIM Janitor RP Proxy',
-    max_messages: MAX_MESSAGES,
     memory_layers: ['core', 'story_summary', 'recent_context']
   });
 });
 
 // ======================
-//  NEW: INCREMENTAL SUMMARIZER
+//  HELPER: RP-SAFE SUMMARY (From Script 1)
 // ======================
-async function updateRollingSummary(nimModel, chatId, newMessages) {
-  const existingSummary = STORY_SUMMARIES.get(chatId) || "The story has just begun.";
-  
+async function summarizeChat(nimModel, messages) {
   try {
     const prompt = [
       {
         role: 'system',
-        content: `Update the "Current Story Status" by incorporating the new events into the existing summary. 
-        Keep it under 300 words. Focus on:
-        1. Current location/setting.
-        2. Status of relationships.
-        3. Recent key actions or reveals.
-        Strictly in-universe, no meta-talk.`
+        content: `
+Summarize the following roleplay strictly in-universe.
+
+Rules:
+- Write as memories the character would personally remember
+- Preserve relationships, emotions, promises, conflicts, and goals
+- Do NOT mention AI, systems, summaries, or chats
+- Be concise but complete
+`
       },
       {
         role: 'user',
-        content: `EXISTING SUMMARY: ${existingSummary}\n\nNEW EVENTS:\n${newMessages.map(m => `${m.role}: ${m.content}`).join('\n')}`
+        content: messages.map(m => `${m.role}: ${m.content}`).join('\n')
       }
     ];
 
-    const res = await axios.post(`${NIM_API_BASE}/chat/completions`, {
-      model: nimModel,
-      messages: prompt,
-      temperature: 0.2, // Low temperature for factual consistency
-      max_tokens: 400
-    }, {
-      headers: { 
-        Authorization: `Bearer ${NIM_API_KEY}`,
-        'Content-Type': 'application/json'
+    const res = await axios.post(
+      `${NIM_API_BASE}/chat/completions`,
+      {
+        model: nimModel,
+        messages: prompt,
+        temperature: 0.3,
+        max_tokens: 500
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${NIM_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
       }
-    });
+    );
 
-    const updated = res.data.choices[0].message.content;
-    STORY_SUMMARIES.set(chatId, updated);
-    console.log(`[Memory] Successfully updated rolling summary for chat: ${chatId}`);
+    console.log(`[Memory] Successfully generated in-universe summary`);
+    return res.data.choices[0].message.content;
   } catch (err) {
-    console.error(`[Memory] Rolling update failed for ${chatId}:`, err.message);
+    console.error('[Memory] Summary failed:', err.message);
+    return null;
   }
 }
 
@@ -151,7 +156,7 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     let nimModel = MODEL_MAPPING[model] || 'deepseek-ai/deepseek-v3.1-terminus';
 
-    // Clamp messages
+    // Clamp message lengths
     let safeMessages = Array.isArray(messages) ? messages : [];
     safeMessages = safeMessages.map(m =>
       typeof m?.content === 'string' && m.content.length > MAX_MESSAGE_CHARS
@@ -173,17 +178,27 @@ Your emotions and reactions evolve naturally based on shared experiences.
     }
 
     // ======================
-    //  SMART TRIGGER (ROLLING SUMMARY)
+    //  STORY SUMMARY (ROLLING - From Script 1)
     // ======================
-    // Triggers in the background if we hit the interval multiple
-    if (safeMessages.length > 0 && safeMessages.length % MEMORY_UPDATE_INTERVAL === 0) {
-      const chunkToProcess = safeMessages.slice(-MEMORY_UPDATE_INTERVAL);
-      updateRollingSummary(nimModel, CHAT_ID, chunkToProcess); 
-      // Not awaited: User doesn't wait for this to finish!
+    const lastAt = LAST_SUMMARY_AT.get(CHAT_ID) || 0;
+
+    if (
+      safeMessages.length > SUMMARY_TRIGGER_MESSAGES &&
+      safeMessages.length - lastAt >= SUMMARY_COOLDOWN
+    ) {
+      const summary = await summarizeChat(
+        nimModel,
+        safeMessages.slice(0, -20) // Summarize everything up to the last 20 messages
+      );
+
+      if (summary) {
+        STORY_SUMMARIES.set(CHAT_ID, summary);
+        LAST_SUMMARY_AT.set(CHAT_ID, safeMessages.length);
+      }
     }
 
     // ======================
-    //  CONTEXT TRIMMING
+    //  CONTEXT TRIMMING (From Script 2)
     // ======================
     // Keep only the most recent messages to prevent the payload from getting too heavy
     if (safeMessages.length > MAX_CONTEXT_MESSAGES) {
