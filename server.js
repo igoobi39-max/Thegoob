@@ -31,9 +31,9 @@ const MAX_RETRIES = 2;
 // ======================
 //  SMART MEMORY CONFIG
 // ======================
-const MAX_CONTEXT_MESSAGES = 40;     // Keeps request size light and fast
-const SUMMARY_TRIGGER_MESSAGES = 60; // Wait until we have 60 messages
-const SUMMARY_COOLDOWN = 40;         // Then wait 40 more before summarizing again
+const MAX_CONTEXT_MESSAGES = 30;     // Dropped from 40 to 30 to keep chats fast
+const SUMMARY_TRIGGER_MESSAGES = 80; // Wait longer (80 messages) to start
+const SUMMARY_COOLDOWN = 60;         // Wait 60 messages between updates
 
 // ======================
 //  MEMORIES STORAGE (PER CHAT)
@@ -67,26 +67,29 @@ app.get('/health', (req, res) => {
 });
 
 // ======================
-//  HELPER: RP-SAFE SUMMARY (From Script 1)
+//  HELPER: RP-SAFE SUMMARY (HIGH COMPRESSION)
 // ======================
-async function summarizeChat(nimModel, messages) {
+async function summarizeChat(nimModel, messages, existingSummary = "") {
   try {
     const prompt = [
       {
         role: 'system',
         content: `
-Summarize the following roleplay strictly in-universe.
+Analyze the roleplay and produce a ultra-dense, compact summary.
+Incorporate any existing summary context.
+Use strict in-universe shorthand. No meta-talk or complete sentences.
 
-Rules:
-- Write as memories the character would personally remember
-- Preserve relationships, emotions, promises, conflicts, and goals
-- Do NOT mention AI, systems, summaries, or chats
-- Be concise but complete
+Format exactly like this:
+LOC: [Current setting]
+RELATION: [1-sentence status of bond]
+KEY PLOT: [Core conflict/event]
+GOALS: [What they are trying to do next]
 `
       },
       {
         role: 'user',
-        content: messages.map(m => `${m.role}: ${m.content}`).join('\n')
+        content: `EXISTING CONTEXT: ${existingSummary}\n\nNEW EVENTS TO ADD:\n` + 
+                 messages.map(m => `${m.role}: ${m.content}`).join('\n')
       }
     ];
 
@@ -95,8 +98,8 @@ Rules:
       {
         model: nimModel,
         messages: prompt,
-        temperature: 0.3,
-        max_tokens: 500
+        temperature: 0.2, // Low temp for focused, robotic extraction
+        max_tokens: 150   // Hard cap at 150 tokens to save resources
       },
       {
         headers: {
@@ -106,7 +109,7 @@ Rules:
       }
     );
 
-    console.log(`[Memory] Successfully generated in-universe summary`);
+    console.log(`[Memory] Compact summary generated.`);
     return res.data.choices[0].message.content;
   } catch (err) {
     console.error('[Memory] Summary failed:', err.message);
@@ -154,7 +157,7 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     const { model, messages, temperature, max_tokens } = req.body;
 
-    let nimModel = MODEL_MAPPING[model] || 'deepseek-ai/deepseek-v3.2';
+    let nimModel = MODEL_MAPPING[model] || 'deepseek-ai/deepseek-v3.1-terminus';
 
     // Clamp message lengths
     let safeMessages = Array.isArray(messages) ? messages : [];
@@ -178,7 +181,7 @@ Your emotions and reactions evolve naturally based on shared experiences.
     }
 
     // ======================
-    //  STORY SUMMARY (ROLLING - From Script 1)
+    //  STORY SUMMARY (ROLLING - COMPACTED)
     // ======================
     const lastAt = LAST_SUMMARY_AT.get(CHAT_ID) || 0;
 
@@ -186,9 +189,14 @@ Your emotions and reactions evolve naturally based on shared experiences.
       safeMessages.length > SUMMARY_TRIGGER_MESSAGES &&
       safeMessages.length - lastAt >= SUMMARY_COOLDOWN
     ) {
+      // Only send the middle chunk of messages to be summarized
+      const messagesToSummarize = safeMessages.slice(lastAt, -20);
+      const existingSummary = STORY_SUMMARIES.get(CHAT_ID) || "";
+      
       const summary = await summarizeChat(
         nimModel,
-        safeMessages.slice(0, -20) // Summarize everything up to the last 20 messages
+        messagesToSummarize,
+        existingSummary
       );
 
       if (summary) {
@@ -198,9 +206,8 @@ Your emotions and reactions evolve naturally based on shared experiences.
     }
 
     // ======================
-    //  CONTEXT TRIMMING (From Script 2)
+    //  CONTEXT TRIMMING
     // ======================
-    // Keep only the most recent messages to prevent the payload from getting too heavy
     if (safeMessages.length > MAX_CONTEXT_MESSAGES) {
       safeMessages = safeMessages.slice(-MAX_CONTEXT_MESSAGES);
     }
@@ -211,7 +218,7 @@ Your emotions and reactions evolve naturally based on shared experiences.
     const memoryInjection = [
       { role: 'system', content: CORE_MEMORIES.get(CHAT_ID) },
       STORY_SUMMARIES.has(CHAT_ID) 
-        ? { role: 'system', content: `LONG-TERM MEMORY: ${STORY_SUMMARIES.get(CHAT_ID)}` }
+        ? { role: 'system', content: `LONG-TERM MEMORY:\n${STORY_SUMMARIES.get(CHAT_ID)}` }
         : null,
       {
         role: 'system',
