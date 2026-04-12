@@ -26,14 +26,14 @@ const NIM_API_KEY = process.env.NIM_API_KEY;
 // ======================
 const MAX_MESSAGE_CHARS = 8000;
 const MIN_RESPONSE_TOKENS = 50;
-const MAX_RETRIES = 2;
+const MAX_RETRIES = 0;
 
 // ======================
 //  SMART MEMORY CONFIG
 // ======================
-const MAX_CONTEXT_MESSAGES = 40;     // Keeps request size light and fast
-const SUMMARY_TRIGGER_MESSAGES = 60; // Wait until we have 60 messages
-const SUMMARY_COOLDOWN = 40;         // Then wait 40 more before summarizing again
+const MAX_CONTEXT_MESSAGES = 60;     // Keeps request size light and fast
+const SUMMARY_TRIGGER_MESSAGES = 100; // Wait until we have 60 messages
+const SUMMARY_COOLDOWN = 150;         // Then wait 40 more before summarizing again
 
 // ======================
 //  MEMORIES STORAGE (PER CHAT)
