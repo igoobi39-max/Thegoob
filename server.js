@@ -32,8 +32,8 @@ const MAX_RETRIES = 0;
 //  SMART MEMORY CONFIG
 // ======================
 const MAX_CONTEXT_MESSAGES = 60;     // Keeps request size light and fast
-const SUMMARY_TRIGGER_MESSAGES = 60; // Wait until we have 60 messages
-const SUMMARY_COOLDOWN = 40;         // Then wait 40 more before summarizing again
+const SUMMARY_TRIGGER_MESSAGES = 150; // Wait until we have 60 messages
+const SUMMARY_COOLDOWN = 100;         // Then wait 40 more before summarizing again
 
 // ======================
 //  MEMORIES STORAGE (PER CHAT)
